@@ -1,4 +1,15 @@
+use clap::Parser;
 use serde::Deserialize;
+
+#[derive(Parser, Debug, Clone)]
+#[command(version, about, long_about = None)]
+pub struct ServerArgs {
+    #[arg(short, long, default_value = "[::1]:50051")]
+    pub address: String,
+
+    #[arg(short, long, default_value = "config.json")]
+    pub config: String,
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct TwitchConfig {
@@ -21,8 +32,8 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    pub fn load() -> Option<Self> {
-        let content = std::fs::read_to_string("config.json").ok()?;
+    pub fn load(path: &str) -> Option<Self> {
+        let content = std::fs::read_to_string(path).ok()?;
         let config = serde_json::from_str::<AppConfig>(&content).ok()?;
         Some(config)
     }

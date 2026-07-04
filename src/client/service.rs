@@ -18,6 +18,7 @@ impl ServerChatStream {
         status: Arc<Mutex<ConnectionStatus>>,
         mut trigger_rx: mpsc::Receiver<()>,
         limit: usize,
+        address: String,
     ) -> Self {
         let max_buffer = 3 * limit;
         let handle = tokio::spawn(async move {
@@ -34,7 +35,7 @@ impl ServerChatStream {
                 };
 
                 if len <= 2 * limit {
-                    match ChatServiceClient::connect("http://[::1]:50051").await {
+                    match ChatServiceClient::connect(address.clone()).await {
                         Ok(mut client) => {
                             {
                                 let mut s = status.lock().unwrap();

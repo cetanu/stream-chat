@@ -29,8 +29,8 @@ impl StreamChatClient {
         let limit = self.config.limit;
         let max_buffer = 3 * limit;
         println!(
-            "[Client] Connecting to Stream Chat Server at http://[::1]:50051... (Displaying N={}, pre-fetching max={})",
-            limit, max_buffer
+            "[Client] Connecting to Stream Chat Server at {}... (Displaying N={}, pre-fetching max={})",
+            self.config.address, limit, max_buffer
         );
 
         let buffer = Arc::new(Mutex::new(load_client_buffer()));
@@ -47,7 +47,8 @@ impl StreamChatClient {
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
-        let connection = ServerChatStream::start(buffer.clone(), status.clone(), trigger_rx, limit);
+        let address = self.config.address.clone();
+        let connection = ServerChatStream::start(buffer.clone(), status.clone(), trigger_rx, limit, address);
 
         let mut state = AppState {
             message_buffer: buffer,

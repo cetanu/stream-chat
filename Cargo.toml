@@ -4,12 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "server"
+name = "stream-chat-server"
 path = "src/bin/server.rs"
 
 [[bin]]
-name = "client"
+name = "stream-chat-client"
 path = "src/bin/client.rs"
+
+[[bin]]
+name = "stream-chat"
+path = "src/bin/local.rs"
 
 [dependencies]
 tokio = { version = "1.36", features = ["full"] }
@@ -24,7 +28,7 @@ rand = "0.8"
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
+clap = { version = "4.5", features = ["derive"] }
 
 [build-dependencies]
 tonic-build = "0.11"
