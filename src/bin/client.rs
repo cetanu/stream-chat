@@ -2,10 +2,8 @@ pub mod chat_protobufs {
     tonic::include_proto!("chat");
 }
 
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tokio::sync::mpsc;
+use chat_protobufs::chat_service_client::ChatServiceClient;
+use chat_protobufs::{ChatMessage, GetMessagesRequest};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -14,13 +12,15 @@ use crossterm::{
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Alignment},
+    layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, List, ListItem, Paragraph},
 };
-use chat_protobufs::chat_service_client::ChatServiceClient;
-use chat_protobufs::{ChatMessage, GetMessagesRequest};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::sync::mpsc;
 
 struct ConnectionStatus {
     connected: bool,
@@ -52,7 +52,7 @@ fn load_client_buffer() -> VecDeque<ChatMessage> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    let mut n = 10; // Default N
+    let mut n = 10;
 
     let mut i = 1;
     while i < args.len() {
@@ -87,7 +87,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let max_buffer = 3 * n;
-    println!("[Client] Connecting to Stream Chat Server at http://[::1]:50051... (Displaying N={}, pre-fetching max={})", n, max_buffer);
+    println!(
+        "[Client] Connecting to Stream Chat Server at http://[::1]:50051... (Displaying N={}, pre-fetching max={})",
+        n, max_buffer
+    );
 
     let buffer = Arc::new(Mutex::new(load_client_buffer()));
     let status = Arc::new(Mutex::new(ConnectionStatus {
@@ -120,9 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 buf.len()
             };
 
-            // If the buffer has dropped below 66% (2 * N), fetch N messages
             if len <= 2 * n {
-                // Attempt to connect and fetch
                 match ChatServiceClient::connect("http://[::1]:50051").await {
                     Ok(mut client) => {
                         {
@@ -131,7 +132,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             s.last_error = None;
                         }
 
-                        // Fetch N messages
                         let request = tonic::Request::new(GetMessagesRequest { limit: n as u32 });
 
                         match client.get_messages(request).await {
@@ -200,17 +200,15 @@ async fn run_app<B: ratatui::backend::Backend>(
         // Non-blocking poll for events to allow UI updates and tick count decreases
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {
-                Event::Key(key) => {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Char('Q') => {
-                            return Ok(());
-                        }
-                        KeyCode::Char(' ') | KeyCode::Char('a') | KeyCode::Char('A') => {
-                            acknowledge_message(state).await;
-                        }
-                        _ => {}
+                Event::Key(key) => match key.code {
+                    KeyCode::Char('q') | KeyCode::Char('Q') => {
+                        return Ok(());
                     }
-                }
+                    KeyCode::Char(' ') | KeyCode::Char('a') | KeyCode::Char('A') => {
+                        acknowledge_message(state).await;
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -269,30 +267,22 @@ fn ui(f: &mut ratatui::Frame, state: &mut AppState) {
 
         let content = Span::styled(&msg.content, Style::default().fg(Color::Gray));
 
-        // Highlight the bottom message (index 0) because it's the next to be acknowledged!
-        if i == 0 {
-            list_items.push(
-                ListItem::new(Line::from(vec![
-                    Span::styled(
-                        "▶",
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    platform_tag,
-                    sender,
-                    content,
-                ]))
-                .style(Style::default().bg(Color::Rgb(40, 40, 20))),
-            ); // Subtle highlight background
-        } else {
-            list_items.push(ListItem::new(Line::from(vec![
-                Span::raw(" "),
-                platform_tag,
-                sender,
-                content,
-            ])));
-        }
+        let (marker, style) = match i {
+            0 => (
+                Span::styled(
+                    "▶",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Style::default().bg(Color::Rgb(40, 40, 20)),
+            ),
+            _ => (Span::raw(" "), Style::default()),
+        };
+
+        list_items.push(
+            ListItem::new(Line::from(vec![marker, platform_tag, sender, content])).style(style),
+        );
     }
 
     let chat_list = List::new(list_items).block(Block::default());
@@ -307,10 +297,7 @@ fn ui(f: &mut ratatui::Frame, state: &mut AppState) {
         true => Color::Green,
         false => Color::Red,
     };
-    let conn_status = Span::styled(
-        "◉",
-        Style::default().fg(color).add_modifier(Modifier::BOLD),
-    );
+    let conn_status = Span::styled("◉", Style::default().fg(color).add_modifier(Modifier::BOLD));
     let err_msg = match last_err {
         Some(e) => format!(" | Error: {} ", e),
         None => " ".to_string(),
