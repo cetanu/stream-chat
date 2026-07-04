@@ -1,0 +1,29 @@
+[package]
+name = "stream-chat"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "server"
+path = "src/bin/server.rs"
+
+[[bin]]
+name = "client"
+path = "src/bin/client.rs"
+
+[dependencies]
+tokio = { version = "1.36", features = ["full"] }
+tonic = "0.11"
+prost = "0.12"
+ratatui = "0.26"
+crossterm = "0.27"
+futures-util = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rand = "0.8"
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+
+
+[build-dependencies]
+tonic-build = "0.11"
+protobuf-src = "1.1"
