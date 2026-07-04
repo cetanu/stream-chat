@@ -155,24 +155,19 @@ async fn resolve_live_chat_id(
 
 pub async fn poll_youtube_chat(config: YouTubeConfig, tx: mpsc::Sender<ChatMessage>) {
     let client = reqwest::Client::new();
-    let mut attempts = 0;
-    let mut live_chat_id = String::default();
-    while attempts < 5 {
-        live_chat_id = match resolve_live_chat_id(&client, &config).await {
-            Ok(id) => {
-                info!("YouTube Ingest: Successfully resolved liveChatId: {}", id);
-                id
-            }
-            Err(e) => {
-                error!(
-                    "YouTube Ingest: Failed to resolve liveChatId: {:?}. YouTube ingest thread terminating.",
-                    e
-                );
-                return;
-            }
-        };
-        attempts += 1;
-    }
+    let live_chat_id = match resolve_live_chat_id(&client, &config).await {
+        Ok(id) => {
+            info!("YouTube Ingest: Successfully resolved liveChatId: {}", id);
+            id
+        }
+        Err(e) => {
+            error!(
+                "YouTube Ingest: Failed to resolve liveChatId: {:?}. YouTube ingest thread terminating.",
+                e
+            );
+            return;
+        }
+    };
 
     let mut page_token: Option<String> = None;
     let mut poll_interval = Duration::from_secs(5);
