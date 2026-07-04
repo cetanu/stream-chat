@@ -1,5 +1,9 @@
 # stream-chat
 
+A server which reads in YouTube/Twitch chat, and a client which consumes the messages and displys them in a TUI.
+
+## Design document
+
 We're constructing an application which will ingest Youtube and Twitch chat
 messages (one or both), put those messages into a queue, and then show a
 maximum of N messages at a time with the streamer having to acknowledge
@@ -18,3 +22,5 @@ The TUI will have buttons for acknowledging the latest message displayed,
 i.e. when a button is pressed, the message at the bottom is purged, and another is brought in.
 In order for this to work smoothly, the client will have to hold 3x N messages,
 and fetch 33% more when it reaches 66%, in a background thread after a message is acknowledged
+
+![diagram](images/howitworks.png)
