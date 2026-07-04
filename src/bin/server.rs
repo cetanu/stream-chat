@@ -1,3 +1,7 @@
+pub mod chat_protobufs {
+    tonic::include_proto!("chat");
+}
+
 use rand::Rng;
 use serde::Deserialize;
 use std::collections::VecDeque;
@@ -7,18 +11,15 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, mpsc};
 use tonic::{Request, Response, Status, transport::Server};
-
-// Include the gRPC generated code
-pub mod chat {
-    tonic::include_proto!("chat");
-}
-
-use chat::chat_service_server::{ChatService, ChatServiceServer};
-use chat::{ChatMessage, GetMessagesRequest, GetMessagesResponse};
+use tracing::{info, debug, warn, error};
+use chat_protobufs::chat_service_server::{ChatService, ChatServiceServer};
+use chat_protobufs::{ChatMessage, GetMessagesRequest, GetMessagesResponse};
 
 type SharedQueue = Arc<Mutex<VecDeque<ChatMessage>>>;
 
-// Config structures for Twitch and YouTube
+
+
+
 #[derive(Debug, Deserialize, Clone)]
 struct TwitchConfig {
     channel: String,
@@ -38,34 +39,62 @@ struct AppConfig {
     youtube: Option<YouTubeConfig>,
 }
 
-// Struct to implement the Tonic gRPC service
-pub struct MyChatService {
+pub struct ChatServer {
     queue: SharedQueue,
 }
 
 #[tonic::async_trait]
-impl ChatService for MyChatService {
+impl ChatService for ChatServer {
     async fn get_messages(
         &self,
         request: Request<GetMessagesRequest>,
     ) -> Result<Response<GetMessagesResponse>, Status> {
         let req = request.into_inner();
         let limit = req.limit as usize;
-
         let mut queue = self.queue.lock().await;
         let count = std::cmp::min(limit, queue.len());
-
-        // Drain/remove messages from the queue to clear them on read
         let messages: Vec<ChatMessage> = queue.drain(..count).collect();
-
         if count > 0 {
-            println!(
-                "[Server] Handing out {} messages, clearing them from server queue.",
+            info!(
+                "Sent {} messages to client",
                 count
             );
+            save_server_queue(&queue);
         }
-
         Ok(Response::new(GetMessagesResponse { messages }))
+    }
+}
+
+fn save_server_queue(q: &VecDeque<ChatMessage>) {
+    match serde_json::to_string(q) {
+        Ok(serialized) => {
+            match std::fs::write("server_state.json", serialized) {
+                Ok(_) => debug!("Saved {} messages to server_state.json", q.len()),
+                Err(e) => error!("Error saving queue to disk: {:?}", e),
+            }
+        }
+        Err(e) => error!("Error serializing queue: {:?}", e),
+    }
+}
+
+fn load_server_queue() -> VecDeque<ChatMessage> {
+    match std::fs::read_to_string("server_state.json") {
+        Ok(content) => {
+            match serde_json::from_str::<VecDeque<ChatMessage>>(&content) {
+                Ok(q) => {
+                    info!("Loaded {} messages from server_state.json", q.len());
+                    q
+                }
+                Err(e) => {
+                    warn!("Failed to deserialize server_state.json: {:?}. Starting with empty queue.", e);
+                    VecDeque::new()
+                }
+            }
+        }
+        Err(_) => {
+            info!("No server_state.json found. Starting with empty queue.");
+            VecDeque::new()
+        }
     }
 }
 
@@ -115,8 +144,8 @@ const TWITCH_MESSAGES: &[&str] = &[
 // Ingest thread for YouTube (Simulated or Real API)
 async fn run_youtube_ingest(config: Option<YouTubeConfig>, tx: mpsc::Sender<ChatMessage>) {
     if let Some(cfg) = config {
-        println!(
-            "[YouTube Ingest] Configured. Connecting to real YouTube API for liveChatId: {}",
+        info!(
+            "YouTube Ingest: Configured. Connecting to real YouTube API for liveChatId: {}",
             cfg.live_chat_id
         );
         let client = reqwest::Client::new();
@@ -183,18 +212,18 @@ async fn run_youtube_ingest(config: Option<YouTubeConfig>, tx: mpsc::Sender<Chat
                             }
                         }
                         Err(e) => {
-                            eprintln!("[YouTube Ingest] Error parsing JSON: {:?}", e);
+                            error!("YouTube Ingest: Error parsing JSON: {:?}", e);
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("[YouTube Ingest] Request error: {:?}", e);
+                    error!("YouTube Ingest: Request error: {:?}", e);
                 }
             }
             tokio::time::sleep(poll_interval).await;
         }
     } else {
-        println!("[YouTube Ingest] No configuration found. Running in SIMULATED mode.");
+        info!("YouTube Ingest: No configuration found. Running in SIMULATED mode.");
         let mut id_counter = 0;
         loop {
             // Wait random time between 2 to 6 seconds
@@ -227,15 +256,15 @@ async fn run_youtube_ingest(config: Option<YouTubeConfig>, tx: mpsc::Sender<Chat
 // Ingest thread for Twitch (Simulated or Real IRC)
 async fn run_twitch_ingest(config: Option<TwitchConfig>, tx: mpsc::Sender<ChatMessage>) {
     if let Some(cfg) = config {
-        println!(
-            "[Twitch Ingest] Configured. Connecting to Twitch IRC for channel: #{}",
+        info!(
+            "Twitch Ingest: Configured. Connecting to Twitch IRC for channel: #{}",
             cfg.channel
         );
 
         loop {
             match TcpStream::connect("irc.chat.twitch.tv:6667").await {
                 Ok(mut stream) => {
-                    println!("[Twitch Ingest] Connected to IRC server.");
+                    info!("Twitch Ingest: Connected to IRC server.");
                     // Authenticate
                     let mut write_err = false;
                     if stream
@@ -263,9 +292,7 @@ async fn run_twitch_ingest(config: Option<TwitchConfig>, tx: mpsc::Sender<ChatMe
                     }
 
                     if write_err {
-                        eprintln!(
-                            "[Twitch Ingest] Error writing auth/join packets. Reconnecting..."
-                        );
+                        error!("Twitch Ingest: Error writing auth/join packets. Reconnecting...");
                         tokio::time::sleep(Duration::from_secs(5)).await;
                         continue;
                     }
@@ -278,7 +305,7 @@ async fn run_twitch_ingest(config: Option<TwitchConfig>, tx: mpsc::Sender<ChatMe
                         line.clear();
                         match buf_reader.read_line(&mut line).await {
                             Ok(0) => {
-                                eprintln!("[Twitch Ingest] Connection closed by twitch server.");
+                                warn!("Twitch Ingest: Connection closed by Twitch server.");
                                 break;
                             }
                             Ok(_) => {
@@ -303,15 +330,15 @@ async fn run_twitch_ingest(config: Option<TwitchConfig>, tx: mpsc::Sender<ChatMe
                                 }
                             }
                             Err(e) => {
-                                eprintln!("[Twitch Ingest] Read error: {:?}", e);
+                                error!("Twitch Ingest: Read error: {:?}", e);
                                 break;
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[Twitch Ingest] Connection error: {:?}. Retrying in 5 seconds...",
+                    error!(
+                        "Twitch Ingest: Connection error: {:?}. Retrying in 5 seconds...",
                         e
                     );
                     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -319,7 +346,7 @@ async fn run_twitch_ingest(config: Option<TwitchConfig>, tx: mpsc::Sender<ChatMe
             }
         }
     } else {
-        println!("[Twitch Ingest] No configuration found. Running in SIMULATED mode.");
+        info!("Twitch Ingest: No configuration found. Running in SIMULATED mode.");
         let mut id_counter = 0;
         loop {
             // Wait random time between 1 to 4 seconds
@@ -384,18 +411,26 @@ fn load_config() -> Option<AppConfig> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("[Server] Starting Stream Chat Server...");
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info".into()),
+        )
+        .init();
+
+    info!("Starting Stream Chat Server...");
 
     let config = load_config();
     let (twitch_cfg, yt_cfg) = match config {
         Some(cfg) => (cfg.twitch, cfg.youtube),
         None => {
-            println!("[Server] config.json not found or invalid. Running in fully simulated mode.");
+            info!("config.json not found or invalid. Running in fully simulated mode.");
             (None, None)
         }
     };
 
-    let queue: SharedQueue = Arc::new(Mutex::new(VecDeque::new()));
+    let initial_queue = load_server_queue();
+    let queue: SharedQueue = Arc::new(Mutex::new(initial_queue));
     let (tx, mut rx) = mpsc::channel::<ChatMessage>(100);
 
     // Spawn ingest tasks
@@ -414,15 +449,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             let mut q = server_queue.lock().await;
+            info!(
+                "Adding message from {} ({}). Total queue length: {}",
+                msg.sender, msg.platform, q.len() + 1
+            );
             q.push_back(msg);
+            save_server_queue(&q);
         }
     });
 
     // Start gRPC server
     let addr = "[::1]:50051".parse()?;
-    let chat_service = MyChatService { queue };
+    let chat_service = ChatServer { queue };
 
-    println!("[Server] gRPC server listening on {}", addr);
+    info!("gRPC server listening on {}", addr);
     Server::builder()
         .add_service(ChatServiceServer::new(chat_service))
         .serve(addr)

@@ -1,53 +1,99 @@
+pub mod chat_protobufs {
+    tonic::include_proto!("chat");
+}
+
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
-
-pub mod chat {
-    tonic::include_proto!("chat");
-}
-
-use chat::chat_service_client::ChatServiceClient;
-use chat::{ChatMessage, GetMessagesRequest};
-
 use crossterm::{
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEventKind,
-    },
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Alignment},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, List, ListItem, Paragraph},
 };
+use chat_protobufs::chat_service_client::ChatServiceClient;
+use chat_protobufs::{ChatMessage, GetMessagesRequest};
 
-const N: usize = 10;
-const MAX_BUFFER: usize = 3 * N;
+struct ConnectionStatus {
+    connected: bool,
+    last_error: Option<String>,
+}
 
 struct AppState {
-    // Single queue representing the buffer of fetched messages (up to 3N)
-    buffer: Arc<Mutex<VecDeque<ChatMessage>>>,
-    // Status info
-    connected: Arc<Mutex<bool>>,
-    last_error: Arc<Mutex<Option<String>>>,
-    // Trigger to fetch more messages
-    trigger_tx: mpsc::Sender<()>,
-    // Store the calculated button rect for mouse click detection
-    button_rect: Rect,
+    message_buffer: Arc<Mutex<VecDeque<ChatMessage>>>,
+    max_messages: usize,
+    status: Arc<Mutex<ConnectionStatus>>,
+    fetch_trigger: mpsc::Sender<()>,
+}
+
+fn save_client_buffer(buf: &VecDeque<ChatMessage>) -> Result<(), std::io::Error> {
+    let serialized = serde_json::to_string(buf)?;
+    std::fs::write("client_state.json", serialized)?;
+    Ok(())
+}
+
+fn load_client_buffer() -> VecDeque<ChatMessage> {
+    if let Ok(content) = std::fs::read_to_string("client_state.json") {
+        if let Ok(buf) = serde_json::from_str::<VecDeque<ChatMessage>>(&content) {
+            return buf;
+        }
+    }
+    VecDeque::new()
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("[Client] Connecting to Stream Chat Server at http://[::1]:50051...");
+    let args: Vec<String> = std::env::args().collect();
+    let mut n = 10; // Default N
 
-    let buffer = Arc::new(Mutex::new(VecDeque::new()));
-    let connected = Arc::new(Mutex::new(false));
-    let last_error = Arc::new(Mutex::new(None));
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-n" | "--limit" => {
+                if i + 1 < args.len() {
+                    if let Ok(parsed) = args[i + 1].parse::<usize>() {
+                        n = parsed;
+                    } else {
+                        eprintln!("Error: Invalid value for -n/--limit. Expected integer.");
+                        std::process::exit(1);
+                    }
+                    i += 2;
+                } else {
+                    eprintln!("Error: Missing value for -n/--limit.");
+                    std::process::exit(1);
+                }
+            }
+            val => {
+                if let Ok(parsed) = val.parse::<usize>() {
+                    n = parsed;
+                } else if val == "-h" || val == "--help" {
+                    println!("Usage: client [-n <limit>]");
+                    std::process::exit(0);
+                } else {
+                    eprintln!("Error: Unknown argument '{}'.", val);
+                    std::process::exit(1);
+                }
+                i += 1;
+            }
+        }
+    }
+
+    let max_buffer = 3 * n;
+    println!("[Client] Connecting to Stream Chat Server at http://[::1]:50051... (Displaying N={}, pre-fetching max={})", n, max_buffer);
+
+    let buffer = Arc::new(Mutex::new(load_client_buffer()));
+    let status = Arc::new(Mutex::new(ConnectionStatus {
+        connected: false,
+        last_error: None,
+    }));
     let (trigger_tx, mut trigger_rx) = mpsc::channel::<()>(10);
 
     // Setup TUI
@@ -59,8 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Spawn background task to keep buffer filled
     let buffer_clone = Arc::clone(&buffer);
-    let connected_clone = Arc::clone(&connected);
-    let error_clone = Arc::clone(&last_error);
+    let status_clone = Arc::clone(&status);
 
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -76,17 +121,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             // If the buffer has dropped below 66% (2 * N), fetch N messages
-            if len <= 2 * N {
+            if len <= 2 * n {
                 // Attempt to connect and fetch
                 match ChatServiceClient::connect("http://[::1]:50051").await {
                     Ok(mut client) => {
                         {
-                            *connected_clone.lock().unwrap() = true;
-                            *error_clone.lock().unwrap() = None;
+                            let mut s = status_clone.lock().unwrap();
+                            s.connected = true;
+                            s.last_error = None;
                         }
 
                         // Fetch N messages
-                        let request = tonic::Request::new(GetMessagesRequest { limit: N as u32 });
+                        let request = tonic::Request::new(GetMessagesRequest { limit: n as u32 });
 
                         match client.get_messages(request).await {
                             Ok(response) => {
@@ -94,20 +140,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if !new_msgs.is_empty() {
                                     let mut buf = buffer_clone.lock().unwrap();
                                     // Make sure we don't exceed 3N
-                                    let space = MAX_BUFFER.saturating_sub(buf.len());
+                                    let space = max_buffer.saturating_sub(buf.len());
                                     let to_add = std::cmp::min(space, new_msgs.len());
                                     buf.extend(new_msgs.into_iter().take(to_add));
+                                    if let Err(e) = save_client_buffer(&buf) {
+                                        eprintln!("[Client] Error saving buffer: {:?}", e);
+                                    }
                                 }
                             }
                             Err(e) => {
-                                *error_clone.lock().unwrap() =
-                                    Some(format!("gRPC Call Error: {}", e));
+                                let mut s = status_clone.lock().unwrap();
+                                s.last_error = Some(format!("gRPC Call Error: {}", e));
                             }
                         }
                     }
                     Err(e) => {
-                        *connected_clone.lock().unwrap() = false;
-                        *error_clone.lock().unwrap() = Some(format!("Connection failed: {}", e));
+                        let mut s = status_clone.lock().unwrap();
+                        s.connected = false;
+                        s.last_error = Some(format!("Connection failed: {}", e));
                     }
                 }
             }
@@ -115,11 +165,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let mut state = AppState {
-        buffer,
-        connected,
-        last_error,
-        trigger_tx,
-        button_rect: Rect::default(),
+        message_buffer: buffer,
+        status,
+        fetch_trigger: trigger_tx,
+        max_messages: n,
     };
 
     // Main event and rendering loop
@@ -157,23 +206,9 @@ async fn run_app<B: ratatui::backend::Backend>(
                             return Ok(());
                         }
                         KeyCode::Char(' ') | KeyCode::Char('a') | KeyCode::Char('A') => {
-                            // Acknowledge bottom message
                             acknowledge_message(state).await;
                         }
                         _ => {}
-                    }
-                }
-                Event::Mouse(mouse_event) => {
-                    if mouse_event.kind == MouseEventKind::Down(MouseButton::Left) {
-                        let col = mouse_event.column;
-                        let row = mouse_event.row;
-                        if state
-                            .button_rect
-                            .contains(ratatui::layout::Position { x: col, y: row })
-                        {
-                            // Mouse clicked the acknowledge button!
-                            acknowledge_message(state).await;
-                        }
                     }
                 }
                 _ => {}
@@ -183,26 +218,31 @@ async fn run_app<B: ratatui::backend::Backend>(
 }
 
 async fn acknowledge_message(state: &mut AppState) {
+    let limit = state.max_messages;
     let len = {
-        let mut buf = state.buffer.lock().unwrap();
+        let mut buf = state.message_buffer.lock().unwrap();
         buf.pop_front();
+        if let Err(e) = save_client_buffer(&buf) {
+            eprintln!("[Client] Error saving buffer: {:?}", e);
+        }
         buf.len()
     };
-    if len <= 2 * N {
-        let _ = state.trigger_tx.try_send(());
+    if len <= 2 * limit {
+        let _ = state.fetch_trigger.try_send(());
     }
 }
 
 fn ui(f: &mut ratatui::Frame, state: &mut AppState) {
     let size = f.size();
+    let limit = state.max_messages;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(N as u16), Constraint::Length(1)])
+        .constraints([Constraint::Length(limit as u16), Constraint::Length(1)])
         .split(size);
 
-    let buffer_msgs = state.buffer.lock().unwrap().clone();
+    let buffer_msgs = state.message_buffer.lock().unwrap().clone();
     let mut list_items = Vec::new();
-    let display_count = std::cmp::min(N, buffer_msgs.len());
+    let display_count = std::cmp::min(limit, buffer_msgs.len());
 
     for i in (0..display_count).rev() {
         let msg = &buffer_msgs[i];
@@ -259,19 +299,21 @@ fn ui(f: &mut ratatui::Frame, state: &mut AppState) {
     f.render_widget(chat_list, chunks[0]);
 
     // Status Block
-    let connected = *state.connected.lock().unwrap();
-    let last_err = state.last_error.lock().unwrap().clone();
+    let (connected, last_err) = {
+        let s = state.status.lock().unwrap();
+        (s.connected, s.last_error.clone())
+    };
     let color = match connected {
         true => Color::Green,
         false => Color::Red,
     };
     let conn_status = Span::styled(
-        "◉ Connected",
+        "◉",
         Style::default().fg(color).add_modifier(Modifier::BOLD),
     );
     let err_msg = match last_err {
-        Some(e) => format!(" | Error: {}", e),
-        None => "".to_string(),
+        Some(e) => format!(" | Error: {} ", e),
+        None => " ".to_string(),
     };
 
     let status_text = Line::from(vec![
@@ -279,6 +321,8 @@ fn ui(f: &mut ratatui::Frame, state: &mut AppState) {
         Span::styled(err_msg, Style::default().fg(Color::Red)),
     ]);
 
-    let status_block = Paragraph::new(status_text).block(Block::default());
+    let status_block = Paragraph::new(status_text)
+        .block(Block::default())
+        .alignment(Alignment::Right);
     f.render_widget(status_block, chunks[1]);
 }
