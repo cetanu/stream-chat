@@ -1,6 +1,6 @@
 [package]
 name = "stream-chat"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "A utility that makes it easier to read every message from chat. Works for YouTube, Twitch, or both."
 license = "FSL-1.1-MIT"
