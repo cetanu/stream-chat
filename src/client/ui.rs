@@ -60,7 +60,7 @@ fn ui(f: &mut ratatui::Frame, state: &mut AppState) {
     let mut list_items = Vec::new();
     let display_count = std::cmp::min(limit, buffer_msgs.len());
 
-    for i in (0..display_count).rev() {
+    for i in 0..display_count {
         let msg = &buffer_msgs[i];
         let platform_tag = if msg.platform == "YouTube" {
             Span::styled(
