@@ -1,5 +1,5 @@
 use crate::client::state::{AppState, save_client_buffer};
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::{
     Terminal,
     backend::Backend,
@@ -19,11 +19,13 @@ pub async fn run_app<B: Backend>(
 
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Char('Q') => {
+                match (key.modifiers, key.code) {
+                    (_, KeyCode::Char('q'))
+                    | (_, KeyCode::Char('Q'))
+                    | (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
                         return Ok(());
                     }
-                    KeyCode::Char(' ') | KeyCode::Char('a') | KeyCode::Char('A') => {
+                    (_, KeyCode::Char(' ')) | (_, KeyCode::Char('a')) | (_, KeyCode::Char('A')) => {
                         acknowledge_message(state).await;
                     }
                     _ => {}
