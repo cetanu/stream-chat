@@ -23,6 +23,8 @@ pub struct YouTubeConfig {
     pub live_chat_id: Option<String>,
     pub video_id: Option<String>,
     pub channel_id: Option<String>,
+    pub min_poll_interval_secs: Option<u64>,
+    pub adaptive_polling: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
