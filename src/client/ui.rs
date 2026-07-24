@@ -53,7 +53,7 @@ fn ui(f: &mut ratatui::Frame, state: &mut AppState) {
     let limit = state.max_messages;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(limit as u16), Constraint::Length(1)])
+        .constraints([Constraint::Length(limit as u16), Constraint::Length(2)])
         .split(size);
 
     let buffer_msgs = state.message_buffer.lock().unwrap().clone();
@@ -100,21 +100,34 @@ fn ui(f: &mut ratatui::Frame, state: &mut AppState) {
         let total_width = chunks[0].width as usize;
 
         // Determine if we have enough space to indent subsequent lines
-        let (first_line_width, subsequent_line_width, indent_len) = if total_width > prefix_width + 10 {
-            (total_width - prefix_width, total_width - prefix_width, prefix_width)
-        } else if total_width > 4 + 10 {
-            (
-                if total_width > prefix_width { total_width - prefix_width } else { 1 },
-                total_width - 4,
-                4
-            )
-        } else {
-            (
-                if total_width > prefix_width { total_width - prefix_width } else { 1 },
-                if total_width > 0 { total_width } else { 1 },
-                0
-            )
-        };
+        let (first_line_width, subsequent_line_width, indent_len) =
+            if total_width > prefix_width + 10 {
+                (
+                    total_width - prefix_width,
+                    total_width - prefix_width,
+                    prefix_width,
+                )
+            } else if total_width > 4 + 10 {
+                (
+                    if total_width > prefix_width {
+                        total_width - prefix_width
+                    } else {
+                        1
+                    },
+                    total_width - 4,
+                    4,
+                )
+            } else {
+                (
+                    if total_width > prefix_width {
+                        total_width - prefix_width
+                    } else {
+                        1
+                    },
+                    if total_width > 0 { total_width } else { 1 },
+                    0,
+                )
+            };
 
         let wrapped_contents = wrap_text(&msg.content, first_line_width, subsequent_line_width);
         let mut item_lines = Vec::new();
@@ -140,9 +153,9 @@ fn ui(f: &mut ratatui::Frame, state: &mut AppState) {
     f.render_widget(chat_list, chunks[0]);
 
     // Status Block
-    let (connected, last_err) = {
+    let (connected, last_err, youtube_status) = {
         let s = state.status.lock().unwrap();
-        (s.connected, s.last_error.clone())
+        (s.connected, s.last_error.clone(), s.youtube_status.clone())
     };
     let color = match connected {
         true => Color::Green,
@@ -154,14 +167,34 @@ fn ui(f: &mut ratatui::Frame, state: &mut AppState) {
         None => " ".to_string(),
     };
 
-    let status_text = Line::from(vec![
+    let mut status_lines = vec![Line::from(vec![
         conn_status,
         Span::styled(err_msg, Style::default().fg(Color::Red)),
-    ]);
+    ])];
+    if let Some(youtube) = youtube_status {
+        let color = match youtube.state.as_str() {
+            "polling" => Color::Green,
+            "error" | "stopped" => Color::Red,
+            _ => Color::Yellow,
+        };
+        status_lines.push(Line::from(vec![
+            Span::styled(
+                "YouTube: ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "{} — {} ({} messages)",
+                    youtube.state, youtube.detail, youtube.messages_received
+                ),
+                Style::default().fg(color),
+            ),
+        ]));
+    }
 
-    let status_block = Paragraph::new(status_text)
+    let status_block = Paragraph::new(status_lines)
         .block(Block::default())
-        .alignment(Alignment::Right);
+        .alignment(Alignment::Left);
     f.render_widget(status_block, chunks[1]);
 }
 

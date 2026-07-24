@@ -37,6 +37,7 @@ impl StreamChatClient {
         let status = Arc::new(Mutex::new(ConnectionStatus {
             connected: false,
             last_error: None,
+            youtube_status: None,
         }));
         let (trigger_tx, trigger_rx) = mpsc::channel::<()>(10);
 
@@ -48,7 +49,8 @@ impl StreamChatClient {
         let mut terminal = Terminal::new(backend)?;
 
         let address = self.config.address.clone();
-        let connection = ServerChatStream::start(buffer.clone(), status.clone(), trigger_rx, limit, address);
+        let connection =
+            ServerChatStream::start(buffer.clone(), status.clone(), trigger_rx, limit, address);
 
         let mut state = AppState {
             message_buffer: buffer,

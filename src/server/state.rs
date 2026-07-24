@@ -6,6 +6,16 @@ use tracing::{debug, error, info, warn};
 
 pub type SharedQueue = Arc<Mutex<VecDeque<ChatMessage>>>;
 
+#[derive(Clone, Debug, Default)]
+pub struct IngestStatus {
+    pub state: String,
+    pub detail: String,
+    pub last_success_at_ms: i64,
+    pub messages_received: u64,
+}
+
+pub type SharedIngestStatus = Arc<Mutex<IngestStatus>>;
+
 pub fn save_queue_to_disk(q: &VecDeque<ChatMessage>) {
     match serde_json::to_string(q) {
         Ok(serialized) => match std::fs::write("server_state.json", serialized) {

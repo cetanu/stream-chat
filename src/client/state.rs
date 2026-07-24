@@ -6,6 +6,14 @@ use tokio::sync::mpsc;
 pub struct ConnectionStatus {
     pub connected: bool,
     pub last_error: Option<String>,
+    pub youtube_status: Option<YouTubeStatus>,
+}
+
+#[derive(Clone)]
+pub struct YouTubeStatus {
+    pub state: String,
+    pub detail: String,
+    pub messages_received: u64,
 }
 
 pub struct AppState {

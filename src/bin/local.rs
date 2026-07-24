@@ -1,8 +1,8 @@
-use stream_chat::server::StreamChatServer;
-use stream_chat::server::config::AppConfig;
+use clap::Parser;
 use stream_chat::client::StreamChatClient;
 use stream_chat::client::config::ClientConfig;
-use clap::Parser;
+use stream_chat::server::StreamChatServer;
+use stream_chat::server::config::AppConfig;
 
 #[derive(Parser, Debug, Clone)]
 #[command(version, about = "Run both stream-chat server and client locally", long_about = None)]
@@ -20,10 +20,13 @@ pub struct LocalArgs {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = LocalArgs::parse();
-    let config = AppConfig::load(&args.config).unwrap_or(AppConfig { twitch: None, youtube: None });
+    let config = AppConfig::load(&args.config).unwrap_or(AppConfig {
+        twitch: None,
+        youtube: None,
+    });
     let server = StreamChatServer::new(config);
     server.start_ingest().await;
-    
+
     let bind_address = args.address.clone();
     tokio::spawn(async move {
         if let Err(e) = server.serve(&bind_address).await {
@@ -35,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         limit: args.limit,
         address: format!("http://{}", args.address),
     };
-    
+
     let client = StreamChatClient::new(client_config);
     client.run().await?;
     Ok(())

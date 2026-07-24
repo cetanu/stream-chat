@@ -1,11 +1,12 @@
 use crate::proto::chat_service_server::ChatService;
-use crate::proto::{ChatMessage, GetMessagesRequest, GetMessagesResponse};
-use crate::server::state::{SharedQueue, save_queue_to_disk};
+use crate::proto::{ChatMessage, GetMessagesRequest, GetMessagesResponse, IngestStatus};
+use crate::server::state::{SharedIngestStatus, SharedQueue, save_queue_to_disk};
 use tonic::{Request, Response, Status};
 use tracing::info;
 
 pub struct ChatServerImpl {
     pub queue: SharedQueue,
+    pub youtube_status: Option<SharedIngestStatus>,
 }
 
 #[tonic::async_trait]
@@ -23,6 +24,21 @@ impl ChatService for ChatServerImpl {
             info!("Sent {} messages to client", count);
             save_queue_to_disk(&queue);
         }
-        Ok(Response::new(GetMessagesResponse { messages }))
+        let youtube_status = match &self.youtube_status {
+            Some(status) => {
+                let status = status.lock().await;
+                Some(IngestStatus {
+                    state: status.state.clone(),
+                    detail: status.detail.clone(),
+                    last_success_at_ms: status.last_success_at_ms,
+                    messages_received: status.messages_received,
+                })
+            }
+            None => None,
+        };
+        Ok(Response::new(GetMessagesResponse {
+            messages,
+            youtube_status,
+        }))
     }
 }

@@ -1,5 +1,5 @@
-use crate::client::state::ConnectionStatus;
 use crate::client::state::save_client_buffer;
+use crate::client::state::{ConnectionStatus, YouTubeStatus};
 use crate::proto::chat_service_client::ChatServiceClient;
 use crate::proto::{ChatMessage, GetMessagesRequest};
 use std::collections::VecDeque;
@@ -49,7 +49,16 @@ impl ServerChatStream {
 
                             match client.get_messages(request).await {
                                 Ok(response) => {
-                                    let new_msgs = response.into_inner().messages;
+                                    let response = response.into_inner();
+                                    if let Some(youtube) = response.youtube_status {
+                                        let mut s = status.lock().unwrap();
+                                        s.youtube_status = Some(YouTubeStatus {
+                                            state: youtube.state,
+                                            detail: youtube.detail,
+                                            messages_received: youtube.messages_received,
+                                        });
+                                    }
+                                    let new_msgs = response.messages;
                                     if !new_msgs.is_empty() {
                                         let mut buf = buffer.lock().unwrap();
                                         let space = max_buffer.saturating_sub(buf.len());

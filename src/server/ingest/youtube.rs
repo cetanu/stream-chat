@@ -1,9 +1,10 @@
 use crate::proto::ChatMessage;
 use crate::server::config::YouTubeConfig;
+use crate::server::state::SharedIngestStatus;
 use serde::Deserialize;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -153,26 +154,71 @@ async fn resolve_live_chat_id(
     Err("Config must specify either live_chat_id, video_id, or channel_id".into())
 }
 
-pub async fn poll_youtube_chat(config: YouTubeConfig, tx: mpsc::Sender<ChatMessage>) {
-    let client = reqwest::Client::new();
-    let mut attempts = 0;
-    let mut live_chat_id = String::default();
-    while attempts < 5 {
-        live_chat_id = match resolve_live_chat_id(&client, &config).await {
-            Ok(id) => {
-                info!("YouTube Ingest: Successfully resolved liveChatId: {}", id);
-                id
-            }
-            Err(e) => {
-                error!(
-                    "YouTube Ingest: Failed to resolve liveChatId: {:?}. YouTube ingest thread terminating.",
-                    e
-                );
-                return;
-            }
-        };
-        attempts += 1;
+fn truncate_detail(detail: impl AsRef<str>) -> String {
+    const MAX_DETAIL_CHARS: usize = 180;
+    let detail = detail.as_ref();
+    let mut truncated: String = detail.chars().take(MAX_DETAIL_CHARS).collect();
+    if detail.chars().count() > MAX_DETAIL_CHARS {
+        truncated.push_str("...");
     }
+    truncated
+}
+
+async fn update_status(
+    status: &SharedIngestStatus,
+    state: &str,
+    detail: impl AsRef<str>,
+    last_success_at_ms: Option<i64>,
+    messages_received: Option<u64>,
+) {
+    let mut current = status.lock().await;
+    current.state = state.to_string();
+    current.detail = truncate_detail(detail);
+    if let Some(timestamp) = last_success_at_ms {
+        current.last_success_at_ms = timestamp;
+    }
+    if let Some(count) = messages_received {
+        current.messages_received = count;
+    }
+}
+
+pub async fn poll_youtube_chat(
+    config: YouTubeConfig,
+    tx: mpsc::Sender<ChatMessage>,
+    status: SharedIngestStatus,
+) {
+    let client = reqwest::Client::new();
+    update_status(
+        &status,
+        "starting",
+        "Resolving active YouTube chat",
+        None,
+        None,
+    )
+    .await;
+    let live_chat_id = match resolve_live_chat_id(&client, &config)
+        .await
+        .map_err(|e| e.to_string())
+    {
+        Ok(id) => {
+            info!("YouTube Ingest: Successfully resolved liveChatId: {}", id);
+            update_status(
+                &status,
+                "polling",
+                "Connected; waiting for chat messages",
+                None,
+                None,
+            )
+            .await;
+            id
+        }
+        Err(e) => {
+            let detail = format!("Could not resolve active chat: {e}");
+            error!("YouTube Ingest: {detail}. YouTube ingest thread terminating.");
+            update_status(&status, "stopped", &detail, None, None).await;
+            return;
+        }
+    };
 
     let mut page_token: Option<String> = None;
     let mut poll_interval = Duration::from_secs(5);
@@ -188,16 +234,15 @@ pub async fn poll_youtube_chat(config: YouTubeConfig, tx: mpsc::Sender<ChatMessa
 
         match client.get(&url).send().await {
             Ok(resp) => {
-                let status = resp.status();
-                if !status.is_success() {
+                let http_status = resp.status();
+                if !http_status.is_success() {
                     let err_text = match resp.text().await {
                         Ok(text) => text,
                         Err(e) => format!("Failed to read HTTP body: {e}"),
                     };
-                    error!(
-                        "YouTube Ingest: API returned error status {}: {}",
-                        status, err_text
-                    );
+                    let detail = format!("YouTube API returned HTTP {http_status}: {err_text}");
+                    error!("YouTube Ingest: {detail}");
+                    update_status(&status, "error", &detail, None, None).await;
                     tokio::time::sleep(poll_interval).await;
                     continue;
                 }
@@ -209,6 +254,25 @@ pub async fn poll_youtube_chat(config: YouTubeConfig, tx: mpsc::Sender<ChatMessa
                         }
                         page_token = data.next_page_token;
 
+                        let item_count = data.items.len();
+                        let received = {
+                            let current = status.lock().await;
+                            current.messages_received + item_count as u64
+                        };
+                        let detail = if item_count == 0 {
+                            format!(
+                                "Last poll succeeded; no new messages. Next poll in {} ms",
+                                poll_interval.as_millis()
+                            )
+                        } else {
+                            format!(
+                                "Last poll received {item_count} message(s). Next poll in {} ms",
+                                poll_interval.as_millis()
+                            )
+                        };
+                        update_status(&status, "polling", detail, Some(now_ms()), Some(received))
+                            .await;
+
                         for item in data.items {
                             let msg = ChatMessage {
                                 id: item.id,
@@ -218,17 +282,32 @@ pub async fn poll_youtube_chat(config: YouTubeConfig, tx: mpsc::Sender<ChatMessa
                                 timestamp: now_ms(),
                             };
                             if tx.send(msg).await.is_err() {
+                                warn!(
+                                    "YouTube Ingest: Message queue receiver dropped; stopping ingest."
+                                );
+                                update_status(
+                                    &status,
+                                    "stopped",
+                                    "Server message queue receiver dropped",
+                                    None,
+                                    None,
+                                )
+                                .await;
                                 return;
                             }
                         }
                     }
                     Err(e) => {
-                        error!("YouTube Ingest: Error parsing JSON: {:?}", e);
+                        let detail = format!("Could not parse YouTube API response: {e}");
+                        error!("YouTube Ingest: {detail}");
+                        update_status(&status, "error", &detail, None, None).await;
                     }
                 }
             }
             Err(e) => {
-                error!("YouTube Ingest: Request error: {:?}", e);
+                let detail = format!("YouTube API request failed: {e}");
+                error!("YouTube Ingest: {detail}");
+                update_status(&status, "error", &detail, None, None).await;
             }
         }
         tokio::time::sleep(poll_interval).await;

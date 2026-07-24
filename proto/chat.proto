@@ -12,6 +12,14 @@ message GetMessagesRequest {
 
 message GetMessagesResponse {
   repeated ChatMessage messages = 1;
+  optional IngestStatus youtube_status = 2;
+}
+
+message IngestStatus {
+  string state = 1;
+  string detail = 2;
+  int64 last_success_at_ms = 3;
+  uint64 messages_received = 4;
 }
 
 message ChatMessage {

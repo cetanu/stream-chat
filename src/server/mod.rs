@@ -1,11 +1,13 @@
 pub mod config;
-pub mod service;
 pub mod ingest;
+pub mod service;
 pub mod state;
 
 use crate::proto::ChatMessage;
 use crate::server::config::AppConfig;
-use crate::server::state::{SharedQueue, load_queue_from_disk, save_queue_to_disk};
+use crate::server::state::{
+    IngestStatus, SharedIngestStatus, SharedQueue, load_queue_from_disk, save_queue_to_disk,
+};
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 use tonic::transport::Server;
@@ -16,6 +18,7 @@ pub struct StreamChatServer {
     queue: SharedQueue,
     rx: mpsc::Receiver<ChatMessage>,
     tx: mpsc::Sender<ChatMessage>,
+    youtube_status: Option<SharedIngestStatus>,
 }
 
 impl StreamChatServer {
@@ -23,20 +26,32 @@ impl StreamChatServer {
         let initial_queue = load_queue_from_disk();
         let queue: SharedQueue = Arc::new(Mutex::new(initial_queue));
         let (tx, rx) = mpsc::channel::<ChatMessage>(100);
+        let youtube_status = config.youtube.as_ref().map(|_| {
+            Arc::new(Mutex::new(IngestStatus {
+                state: "starting".to_string(),
+                detail: "YouTube ingest has not started yet".to_string(),
+                ..IngestStatus::default()
+            }))
+        });
 
         Self {
             config,
             queue,
             rx,
             tx,
+            youtube_status,
         }
     }
 
     pub async fn start_ingest(&self) {
         if let Some(youtube) = self.config.youtube.clone() {
             let yt_tx = self.tx.clone();
+            let yt_status = self
+                .youtube_status
+                .clone()
+                .expect("YouTube status is initialized with YouTube config");
             tokio::spawn(async move {
-                ingest::youtube::poll_youtube_chat(youtube, yt_tx).await;
+                ingest::youtube::poll_youtube_chat(youtube, yt_tx, yt_status).await;
             });
         }
 
@@ -67,6 +82,7 @@ impl StreamChatServer {
         let addr = addr.parse()?;
         let chat_service = service::ChatServerImpl {
             queue: self.queue.clone(),
+            youtube_status: self.youtube_status.clone(),
         };
         info!("gRPC server listening on {}", addr);
         Server::builder()
