@@ -17,6 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(&args.config).unwrap_or(stream_chat::server::config::AppConfig {
         twitch: None,
         youtube: None,
+        twitter: None,
     });
 
     let server = StreamChatServer::new(config);

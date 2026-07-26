@@ -28,9 +28,17 @@ pub struct YouTubeConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct TwitterConfig {
+    pub ws_url: String,
+    pub room_id: String,
+    pub auth_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
     pub twitch: Option<TwitchConfig>,
     pub youtube: Option<YouTubeConfig>,
+    pub twitter: Option<TwitterConfig>,
 }
 
 impl AppConfig {

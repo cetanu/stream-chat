@@ -61,6 +61,13 @@ impl StreamChatServer {
                 ingest::twitch::poll_twitch_chat(twitch, twitch_tx).await;
             });
         }
+
+        if let Some(twitter) = self.config.twitter.clone() {
+            let twitter_tx = self.tx.clone();
+            tokio::spawn(async move {
+                ingest::twitter::poll_twitter_chat(twitter, twitter_tx).await;
+            });
+        }
     }
 
     pub async fn serve(mut self, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
